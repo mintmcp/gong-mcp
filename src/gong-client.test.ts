@@ -129,6 +129,17 @@ describe("sanitizeGongBaseUrl", () => {
     expect(sanitizeGongBaseUrl("https://notgong.io")).toBeUndefined();
   });
 
+  it("rejects malformed empty-label hosts", () => {
+    expect(sanitizeGongBaseUrl("https://.api.gong.io")).toBeUndefined();
+    expect(sanitizeGongBaseUrl("https://foo..api.gong.io")).toBeUndefined();
+  });
+
+  it("rejects non-default ports but allows explicit 443", () => {
+    expect(sanitizeGongBaseUrl("https://api.gong.io:8443")).toBeUndefined();
+    expect(sanitizeGongBaseUrl("https://us-11711.api.gong.io:9443")).toBeUndefined();
+    expect(sanitizeGongBaseUrl("https://api.gong.io:443")).toBe("https://api.gong.io");
+  });
+
   it("rejects non-HTTPS schemes", () => {
     expect(sanitizeGongBaseUrl("http://us-11711.api.gong.io")).toBeUndefined();
     expect(sanitizeGongBaseUrl("file:///etc/passwd")).toBeUndefined();

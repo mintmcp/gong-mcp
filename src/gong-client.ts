@@ -95,8 +95,14 @@ export function sanitizeGongBaseUrl(raw?: string): string | undefined {
   if (!raw) return undefined;
   try {
     const u = new URL(raw);
-    const isGongHost = u.hostname === "api.gong.io" || u.hostname.endsWith(".api.gong.io");
+    // Anchored label match: optional well-formed subdomain labels then api.gong.io.
+    // A suffix check (endsWith) would wrongly accept empty-label hosts like
+    // "foo..api.gong.io" / ".api.gong.io".
+    const isGongHost = /^([a-z0-9-]+\.)*api\.gong\.io$/i.test(u.hostname);
     if (u.protocol !== "https:" || !isGongHost) return undefined;
+    // Reject non-default ports: an allowlisted host on an alternate port could
+    // still be a different service, which would reopen the exfil path.
+    if (u.port !== "" && u.port !== "443") return undefined;
     return u.origin;
   } catch {
     return undefined;
