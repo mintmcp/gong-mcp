@@ -460,6 +460,7 @@ app.post("/mcp", async (req, res) => {
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
     } catch (err) {
+      console.error(`MCP request error: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
       if (!res.headersSent) {
         res.status(500).json({
           jsonrpc: "2.0",

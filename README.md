@@ -115,3 +115,6 @@ npm start            # Run compiled JS
 The server listens on `$PORT` (default 8000) at `/mcp`. For local testing, set
 either `GONG_ACCESS_TOKEN` (bearer) or `GONG_ACCESS_KEY` + `GONG_ACCESS_KEY_SECRET`
 (service account).
+
+`GONG_REQUEST_TIMEOUT_MS` (optional, default `30000`) controls the per-request
+timeout to Gong in milliseconds.
