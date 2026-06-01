@@ -6,19 +6,42 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 const DEFAULT_BASE_URL = "https://us-11711.api.gong.io";
 
-/** Per-request context carrying the user's access token and optional base URL. */
+/** Per-request context carrying the finished Authorization header and optional base URL. */
 export interface RequestContext {
-  accessToken: string;
+  authorization: string;
   baseUrl?: string;
 }
 
 export const requestContext = new AsyncLocalStorage<RequestContext>();
 
+/**
+ * Build the Authorization header value from whichever credentials are present.
+ * Precedence (first match wins):
+ *   1. Per-user bearer token from the request  -> Bearer  (canonical OAuth mode)
+ *   2. Service-account access key + secret      -> Basic   (shared connection)
+ *   3. Shared bearer token from env             -> Bearer  (legacy fallback)
+ * Returns undefined when no usable credential is configured.
+ */
+export function resolveAuthorization(src: {
+  headerToken?: string;
+  accessKey?: string;
+  accessKeySecret?: string;
+  envToken?: string;
+}): string | undefined {
+  if (src.headerToken) return `Bearer ${src.headerToken}`;
+  if (src.accessKey && src.accessKeySecret) {
+    const encoded = Buffer.from(`${src.accessKey}:${src.accessKeySecret}`).toString("base64");
+    return `Basic ${encoded}`;
+  }
+  if (src.envToken) return `Bearer ${src.envToken}`;
+  return undefined;
+}
+
 function getContext(): RequestContext {
   const ctx = requestContext.getStore();
-  if (!ctx?.accessToken) {
+  if (!ctx?.authorization) {
     throw new Error(
-      "Missing Gong access token. Configure GONG_ACCESS_TOKEN in your MintMCP connection settings."
+      "Missing Gong credentials. Provide a per-user OAuth token, or set GONG_ACCESS_KEY + GONG_ACCESS_KEY_SECRET (service account) in your MintMCP connector settings."
     );
   }
   return ctx;
@@ -42,7 +65,7 @@ export async function gongRequest(opts: GongRequestOptions): Promise<unknown> {
   }
 
   const headers: Record<string, string> = {
-    Authorization: `Bearer ${ctx.accessToken}`,
+    Authorization: ctx.authorization,
   };
   if (opts.body) {
     headers["Content-Type"] = "application/json";
