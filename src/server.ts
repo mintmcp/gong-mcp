@@ -440,13 +440,12 @@ app.post("/mcp", async (req, res) => {
     (req.headers["x-gong-access-token"] as string) ||
     (authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : "") ||
     "";
-  const authorization =
-    resolveAuthorization({
-      headerToken,
-      accessKey: process.env.GONG_ACCESS_KEY,
-      accessKeySecret: process.env.GONG_ACCESS_KEY_SECRET,
-      envToken: process.env.GONG_ACCESS_TOKEN,
-    }) || "";
+  const authorization = resolveAuthorization({
+    headerToken,
+    accessKey: process.env.GONG_ACCESS_KEY,
+    accessKeySecret: process.env.GONG_ACCESS_KEY_SECRET,
+    envToken: process.env.GONG_ACCESS_TOKEN,
+  });
   const baseUrl = (req.headers["x-gong-base-url"] as string) || process.env.GONG_BASE_URL || "";
 
   const transport = new StreamableHTTPServerTransport({

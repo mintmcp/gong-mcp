@@ -32,4 +32,8 @@ describe("resolveAuthorization", () => {
     expect(resolveAuthorization({ accessKey: "ak" })).toBeUndefined();
     expect(resolveAuthorization({ accessKeySecret: "sk" })).toBeUndefined();
   });
+
+  it("falls back to env bearer when service account is half-configured", () => {
+    expect(resolveAuthorization({ accessKey: "ak", envToken: "env-tok" })).toBe("Bearer env-tok");
+  });
 });

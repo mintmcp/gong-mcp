@@ -8,7 +8,7 @@ const DEFAULT_BASE_URL = "https://us-11711.api.gong.io";
 
 /** Per-request context carrying the finished Authorization header and optional base URL. */
 export interface RequestContext {
-  authorization: string;
+  authorization?: string;
   baseUrl?: string;
 }
 
@@ -65,7 +65,7 @@ export async function gongRequest(opts: GongRequestOptions): Promise<unknown> {
   }
 
   const headers: Record<string, string> = {
-    Authorization: ctx.authorization,
+    Authorization: ctx.authorization!,
   };
   if (opts.body) {
     headers["Content-Type"] = "application/json";
