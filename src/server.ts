@@ -450,10 +450,13 @@ app.post("/mcp", async (req, res) => {
   });
   // The client-supplied base URL is sanitized to Gong's API domain (SSRF +
   // credential-exfil guard); GONG_BASE_URL is operator-set and trusted as-is.
-  const baseUrl =
-    sanitizeGongBaseUrl(req.headers["x-gong-base-url"] as string | undefined) ||
-    process.env.GONG_BASE_URL ||
-    "";
+  const rawBaseUrl = req.headers["x-gong-base-url"] as string | undefined;
+  const sanitizedBaseUrl = sanitizeGongBaseUrl(rawBaseUrl);
+  if (rawBaseUrl && !sanitizedBaseUrl) {
+    // Don't log the value (attacker-controlled) — just the fact of rejection.
+    console.warn("Ignoring invalid x-gong-base-url header; falling back to the configured Gong host.");
+  }
+  const baseUrl = sanitizedBaseUrl || process.env.GONG_BASE_URL || "";
 
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless
