@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
 import { z } from "zod";
-import { gongRequest, gongFetchPage, requestContext, resolveAuthorization } from "./gong-client.js";
+import { gongRequest, gongFetchPage, requestContext, resolveAuthorization, parseBearerToken } from "./gong-client.js";
 
 const server = new McpServer(
   { name: "gong", version: "1.0.0" },
@@ -435,10 +435,12 @@ app.post("/mcp", async (req, res) => {
   // precedence; otherwise fall back to a shared service account (GONG_ACCESS_KEY
   // + GONG_ACCESS_KEY_SECRET -> Basic) or a shared env bearer token. The MintMCP
   // connector config decides which of these is present, so no mode flag is needed.
-  const authHeader = req.headers["authorization"] as string | undefined;
+  // Per-user token: a custom header, or a (case-insensitive) Bearer Authorization
+  // header. A per-user token must win over the shared service account, so dropping
+  // a valid "bearer <t>" here would silently widen access — hence parseBearerToken.
   const headerToken =
     (req.headers["x-gong-access-token"] as string) ||
-    (authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : "") ||
+    parseBearerToken(req.headers["authorization"] as string | undefined) ||
     "";
   const authorization = resolveAuthorization({
     headerToken,

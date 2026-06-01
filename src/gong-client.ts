@@ -9,6 +9,10 @@ const DEFAULT_BASE_URL = "https://us-11711.api.gong.io";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_RETRIES = 2;
 const RETRYABLE_STATUS = new Set([429, 503]);
+// Upper bound on a single retry wait. Deliberately small: this runs inside a
+// synchronous MCP request, so we'd rather fail fast and let the client retry
+// than block for a long Retry-After (e.g. a maintenance window).
+const MAX_RETRY_DELAY_MS = 10_000;
 
 function requestTimeoutMs(): number {
   const raw = Number(process.env.GONG_REQUEST_TIMEOUT_MS);
@@ -19,11 +23,23 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Delay before a retry: honor Retry-After (seconds, capped at 10s) else exp backoff. */
-function retryDelayMs(res: Response, attempt: number): number {
-  const retryAfter = Number(res.headers.get("retry-after"));
-  if (Number.isFinite(retryAfter) && retryAfter > 0) {
-    return Math.min(retryAfter * 1000, 10_000);
+/**
+ * Delay before a retry. Honors Retry-After in both forms allowed by the spec —
+ * delta-seconds and HTTP-date — then falls back to exponential backoff. The
+ * result is always clamped to MAX_RETRY_DELAY_MS (see its comment).
+ */
+export function retryDelayMs(res: Response, attempt: number): number {
+  const header = res.headers.get("retry-after");
+  if (header) {
+    const seconds = Number(header);
+    if (Number.isFinite(seconds) && seconds > 0) {
+      return Math.min(seconds * 1000, MAX_RETRY_DELAY_MS);
+    }
+    const dateMs = Date.parse(header);
+    if (!Number.isNaN(dateMs)) {
+      const delta = dateMs - Date.now();
+      if (delta > 0) return Math.min(delta, MAX_RETRY_DELAY_MS);
+    }
   }
   return Math.min(500 * 2 ** attempt, 5_000);
 }
@@ -57,6 +73,15 @@ export function resolveAuthorization(src: {
   }
   if (src.envToken) return `Bearer ${src.envToken}`;
   return undefined;
+}
+
+/**
+ * Extract a bearer token from an Authorization header value. The auth scheme is
+ * case-insensitive per RFC 7235, so "bearer <t>" is accepted as well as
+ * "Bearer <t>"; returns undefined for missing, empty, or non-bearer headers.
+ */
+export function parseBearerToken(authHeader?: string): string | undefined {
+  return authHeader?.match(/^Bearer\s+(.+)$/i)?.[1];
 }
 
 function getContext(): RequestContext {
@@ -111,6 +136,8 @@ export async function gongRequest(opts: GongRequestOptions): Promise<unknown> {
     }
 
     if (RETRYABLE_STATUS.has(res.status) && attempt < MAX_RETRIES) {
+      // Release the unread body so undici can reuse the connection on retry.
+      await res.body?.cancel().catch(() => {});
       await sleep(retryDelayMs(res, attempt));
       continue;
     }

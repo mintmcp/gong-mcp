@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveAuthorization, extractPage } from "./gong-client.js";
+import { resolveAuthorization, extractPage, parseBearerToken, retryDelayMs } from "./gong-client.js";
 
 describe("resolveAuthorization", () => {
   it("prefers a per-user header token (canonical OAuth mode)", () => {
@@ -71,5 +71,44 @@ describe("extractPage", () => {
 
   it("handles an empty response", () => {
     expect(extractPage({})).toEqual({ records: [], totalRecords: 0, nextPageToken: undefined });
+  });
+});
+
+describe("parseBearerToken", () => {
+  it("extracts a Bearer token", () => {
+    expect(parseBearerToken("Bearer abc123")).toBe("abc123");
+  });
+
+  it("is case-insensitive on the scheme", () => {
+    expect(parseBearerToken("bearer abc123")).toBe("abc123");
+  });
+
+  it("tolerates extra whitespace after the scheme", () => {
+    expect(parseBearerToken("Bearer    abc123")).toBe("abc123");
+  });
+
+  it("returns undefined for missing, empty, or non-bearer headers", () => {
+    expect(parseBearerToken(undefined)).toBeUndefined();
+    expect(parseBearerToken("Basic xyz")).toBeUndefined();
+    expect(parseBearerToken("Bearer ")).toBeUndefined();
+  });
+});
+
+describe("retryDelayMs", () => {
+  const resWith = (headers: Record<string, string>) => new Response(null, { headers });
+
+  it("honors numeric Retry-After seconds, capped at the max", () => {
+    expect(retryDelayMs(resWith({ "retry-after": "3" }), 0)).toBe(3000);
+    expect(retryDelayMs(resWith({ "retry-after": "999" }), 0)).toBe(10_000);
+  });
+
+  it("parses an HTTP-date Retry-After and clamps to the max", () => {
+    const future = new Date(Date.now() + 60_000).toUTCString();
+    expect(retryDelayMs(resWith({ "retry-after": future }), 0)).toBe(10_000);
+  });
+
+  it("falls back to exponential backoff when no Retry-After is present", () => {
+    expect(retryDelayMs(resWith({}), 0)).toBe(500);
+    expect(retryDelayMs(resWith({}), 2)).toBe(2000);
   });
 });
