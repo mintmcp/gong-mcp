@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
 import { z } from "zod";
-import { gongRequest, gongFetchPage, requestContext, resolveAuthorization, parseBearerToken } from "./gong-client.js";
+import { gongRequest, gongFetchPage, requestContext, resolveAuthorization, parseBearerToken, sanitizeGongBaseUrl } from "./gong-client.js";
 
 const server = new McpServer(
   { name: "gong", version: "1.0.0" },
@@ -448,7 +448,12 @@ app.post("/mcp", async (req, res) => {
     accessKeySecret: process.env.GONG_ACCESS_KEY_SECRET,
     envToken: process.env.GONG_ACCESS_TOKEN,
   });
-  const baseUrl = (req.headers["x-gong-base-url"] as string) || process.env.GONG_BASE_URL || "";
+  // The client-supplied base URL is sanitized to Gong's API domain (SSRF +
+  // credential-exfil guard); GONG_BASE_URL is operator-set and trusted as-is.
+  const baseUrl =
+    sanitizeGongBaseUrl(req.headers["x-gong-base-url"] as string | undefined) ||
+    process.env.GONG_BASE_URL ||
+    "";
 
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless

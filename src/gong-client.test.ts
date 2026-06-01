@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveAuthorization, extractPage, parseBearerToken, retryDelayMs } from "./gong-client.js";
+import { resolveAuthorization, extractPage, parseBearerToken, retryDelayMs, sanitizeGongBaseUrl } from "./gong-client.js";
 
 describe("resolveAuthorization", () => {
   it("prefers a per-user header token (canonical OAuth mode)", () => {
@@ -110,5 +110,33 @@ describe("retryDelayMs", () => {
   it("falls back to exponential backoff when no Retry-After is present", () => {
     expect(retryDelayMs(resWith({}), 0)).toBe(500);
     expect(retryDelayMs(resWith({}), 2)).toBe(2000);
+  });
+});
+
+describe("sanitizeGongBaseUrl", () => {
+  it("accepts a regional Gong API host and returns the origin", () => {
+    expect(sanitizeGongBaseUrl("https://us-11711.api.gong.io")).toBe("https://us-11711.api.gong.io");
+    expect(sanitizeGongBaseUrl("https://us-11711.api.gong.io/v2/calls")).toBe("https://us-11711.api.gong.io");
+  });
+
+  it("accepts the bare api.gong.io host", () => {
+    expect(sanitizeGongBaseUrl("https://api.gong.io")).toBe("https://api.gong.io");
+  });
+
+  it("rejects non-Gong hosts (SSRF / credential-exfil guard)", () => {
+    expect(sanitizeGongBaseUrl("https://attacker.example")).toBeUndefined();
+    expect(sanitizeGongBaseUrl("https://api.gong.io.attacker.example")).toBeUndefined();
+    expect(sanitizeGongBaseUrl("https://notgong.io")).toBeUndefined();
+  });
+
+  it("rejects non-HTTPS schemes", () => {
+    expect(sanitizeGongBaseUrl("http://us-11711.api.gong.io")).toBeUndefined();
+    expect(sanitizeGongBaseUrl("file:///etc/passwd")).toBeUndefined();
+  });
+
+  it("rejects missing or malformed input", () => {
+    expect(sanitizeGongBaseUrl(undefined)).toBeUndefined();
+    expect(sanitizeGongBaseUrl("")).toBeUndefined();
+    expect(sanitizeGongBaseUrl("not a url")).toBeUndefined();
   });
 });

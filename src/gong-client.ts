@@ -84,6 +84,25 @@ export function parseBearerToken(authHeader?: string): string | undefined {
   return authHeader?.match(/^Bearer\s+(.+)$/i)?.[1];
 }
 
+/**
+ * Validate a client-supplied Gong base URL. We attach the (potentially shared,
+ * org-wide) Gong credential to every outbound request, so an unvalidated base
+ * URL from a request header is an SSRF + credential-exfiltration vector. Only
+ * accept HTTPS URLs whose host is Gong's API domain; return the bare origin, or
+ * undefined if invalid so the caller falls back to a trusted default.
+ */
+export function sanitizeGongBaseUrl(raw?: string): string | undefined {
+  if (!raw) return undefined;
+  try {
+    const u = new URL(raw);
+    const isGongHost = u.hostname === "api.gong.io" || u.hostname.endsWith(".api.gong.io");
+    if (u.protocol !== "https:" || !isGongHost) return undefined;
+    return u.origin;
+  } catch {
+    return undefined;
+  }
+}
+
 function getContext(): RequestContext {
   const ctx = requestContext.getStore();
   if (!ctx?.authorization) {
@@ -120,6 +139,8 @@ export async function gongRequest(opts: GongRequestOptions): Promise<unknown> {
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   };
 
+  const timeoutMs = requestTimeoutMs();
+
   // Retry only on 429/503: both are pre-processing rejections (rate gate /
   // service unavailable), so the request never reached Gong's handler — safe to
   // retry for any method, including writes. The infinite-for always returns or
@@ -127,11 +148,12 @@ export async function gongRequest(opts: GongRequestOptions): Promise<unknown> {
   for (let attempt = 0; ; attempt++) {
     let res: Response;
     try {
-      res = await fetch(url.toString(), { ...init, signal: AbortSignal.timeout(requestTimeoutMs()) });
+      res = await fetch(url.toString(), { ...init, signal: AbortSignal.timeout(timeoutMs) });
     } catch (err) {
-      const reason = err instanceof Error && err.name === "TimeoutError"
-        ? `timed out after ${requestTimeoutMs()}ms`
-        : err instanceof Error ? err.message : String(err);
+      let reason: string;
+      if (err instanceof Error && err.name === "TimeoutError") reason = `timed out after ${timeoutMs}ms`;
+      else if (err instanceof Error) reason = err.message;
+      else reason = String(err);
       throw new Error(`Gong API request failed (${opts.method} ${opts.path}): ${reason}`);
     }
 
@@ -174,8 +196,7 @@ export function extractPage(
     if (key !== "records" && Array.isArray(val)) records.push(...val);
   }
 
-  const nextPageToken = recordsMeta?.cursor as string | undefined;
-  return { records, totalRecords, nextPageToken: nextPageToken || undefined };
+  return { records, totalRecords, nextPageToken: (recordsMeta?.cursor as string) || undefined };
 }
 
 /**
