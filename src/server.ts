@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
 import { z } from "zod";
-import { gongRequest, gongFetchPage, requestContext } from "./gong-client.js";
+import { gongRequest, gongFetchPage, requestContext, resolveAuthorization } from "./gong-client.js";
 
 const server = new McpServer(
   { name: "gong", version: "1.0.0" },
@@ -431,14 +431,22 @@ const app = express();
 app.use(express.json());
 
 app.post("/mcp", async (req, res) => {
-  // Extract per-user access token from request headers.
-  // MintMCP forwards OAuth tokens as headers configured by the connector admin.
+  // Resolve auth for this request. A per-user OAuth token (header) takes
+  // precedence; otherwise fall back to a shared service account (GONG_ACCESS_KEY
+  // + GONG_ACCESS_KEY_SECRET -> Basic) or a shared env bearer token. The MintMCP
+  // connector config decides which of these is present, so no mode flag is needed.
   const authHeader = req.headers["authorization"] as string | undefined;
-  const accessToken =
+  const headerToken =
     (req.headers["x-gong-access-token"] as string) ||
     (authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : "") ||
-    process.env.GONG_ACCESS_TOKEN ||
     "";
+  const authorization =
+    resolveAuthorization({
+      headerToken,
+      accessKey: process.env.GONG_ACCESS_KEY,
+      accessKeySecret: process.env.GONG_ACCESS_KEY_SECRET,
+      envToken: process.env.GONG_ACCESS_TOKEN,
+    }) || "";
   const baseUrl = (req.headers["x-gong-base-url"] as string) || process.env.GONG_BASE_URL || "";
 
   const transport = new StreamableHTTPServerTransport({
@@ -447,7 +455,7 @@ app.post("/mcp", async (req, res) => {
 
   // Wrap the entire MCP handling in the async context so all tool calls
   // within this request can access the user's credentials.
-  requestContext.run({ accessToken, baseUrl: baseUrl || undefined }, async () => {
+  requestContext.run({ authorization, baseUrl: baseUrl || undefined }, async () => {
     try {
       res.on("close", () => transport.close());
       await server.connect(transport);
