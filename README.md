@@ -30,6 +30,30 @@ MCP server for [Gong](https://www.gong.io/) conversation intelligence. Deployed 
 | `update_meeting` | Update an existing meeting |
 | `delete_meeting` | Delete a meeting |
 
+## Authentication
+
+The server supports two mutually exclusive auth modes, auto-selected by which
+credentials the MintMCP connector injects — no mode flag required.
+
+| Mode | Credential | How it's configured on MintMCP | Wire auth |
+|---|---|---|---|
+| **Per-user OAuth** (canonical) | Each user's OAuth token | Per-user OAuth; forwarded as `Authorization: Bearer` / `x-gong-access-token` | `Authorization: Bearer <token>` |
+| **Shared service account** | Org Access Key + Secret | **Global** env vars `GONG_ACCESS_KEY` and `GONG_ACCESS_KEY_SECRET` | `Authorization: Basic base64(key:secret)` |
+
+Resolution precedence per request: per-user header token → `GONG_ACCESS_KEY` +
+`GONG_ACCESS_KEY_SECRET` (Basic) → `GONG_ACCESS_TOKEN` (shared bearer fallback).
+
+**Service-account setup:** in Gong, a Technical Administrator generates an API key
+(Company Settings → API → *Get API Key*) granting the scopes listed below, then
+sets `GONG_ACCESS_KEY` and `GONG_ACCESS_KEY_SECRET` as **global** env vars in the
+connector settings. All users then share that single Gong identity. The key's
+granted scopes decide read-only vs. read-write; one key spans all workspaces it's
+scoped to (tools filter via `workspaceId`).
+
+> Trade-off: a shared service account collapses per-user identity — every user
+> sees what the service account can see, and write actions are attributed to it.
+> Use per-user OAuth when per-rep visibility or attribution matters.
+
 ## OAuth Scopes
 
 ```
@@ -88,4 +112,9 @@ npm run dev          # Run with tsx (hot reload)
 npm start            # Run compiled JS
 ```
 
-The server listens on port 8000 at `/mcp`. Set `GONG_ACCESS_TOKEN` env var for local testing.
+The server listens on `$PORT` (default 8000) at `/mcp`. For local testing, set
+either `GONG_ACCESS_TOKEN` (bearer) or `GONG_ACCESS_KEY` + `GONG_ACCESS_KEY_SECRET`
+(service account).
+
+`GONG_REQUEST_TIMEOUT_MS` (optional, default `30000`) controls the per-request
+timeout to Gong in milliseconds.

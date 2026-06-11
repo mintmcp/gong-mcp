@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
 import { z } from "zod";
-import { gongRequest, gongFetchPage, requestContext } from "./gong-client.js";
+import { gongRequest, gongFetchPage, requestContext, resolveAuthorization, parseBearerToken, sanitizeGongBaseUrl } from "./gong-client.js";
 
 const server = new McpServer(
   { name: "gong", version: "1.0.0" },
@@ -431,15 +431,32 @@ const app = express();
 app.use(express.json());
 
 app.post("/mcp", async (req, res) => {
-  // Extract per-user access token from request headers.
-  // MintMCP forwards OAuth tokens as headers configured by the connector admin.
-  const authHeader = req.headers["authorization"] as string | undefined;
-  const accessToken =
+  // Resolve auth for this request. A per-user OAuth token (header) takes
+  // precedence; otherwise fall back to a shared service account (GONG_ACCESS_KEY
+  // + GONG_ACCESS_KEY_SECRET -> Basic) or a shared env bearer token. The MintMCP
+  // connector config decides which of these is present, so no mode flag is needed.
+  // Per-user token: a custom header, or a (case-insensitive) Bearer Authorization
+  // header. A per-user token must win over the shared service account, so dropping
+  // a valid "bearer <t>" here would silently widen access — hence parseBearerToken.
+  const headerToken =
     (req.headers["x-gong-access-token"] as string) ||
-    (authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : "") ||
-    process.env.GONG_ACCESS_TOKEN ||
+    parseBearerToken(req.headers["authorization"] as string | undefined) ||
     "";
-  const baseUrl = (req.headers["x-gong-base-url"] as string) || process.env.GONG_BASE_URL || "";
+  const authorization = resolveAuthorization({
+    headerToken,
+    accessKey: process.env.GONG_ACCESS_KEY,
+    accessKeySecret: process.env.GONG_ACCESS_KEY_SECRET,
+    envToken: process.env.GONG_ACCESS_TOKEN,
+  });
+  // The client-supplied base URL is sanitized to Gong's API domain (SSRF +
+  // credential-exfil guard); GONG_BASE_URL is operator-set and trusted as-is.
+  const rawBaseUrl = req.headers["x-gong-base-url"] as string | undefined;
+  const sanitizedBaseUrl = sanitizeGongBaseUrl(rawBaseUrl);
+  if (rawBaseUrl && !sanitizedBaseUrl) {
+    // Don't log the value (attacker-controlled) — just the fact of rejection.
+    console.warn("Ignoring invalid x-gong-base-url header; falling back to the configured Gong host.");
+  }
+  const baseUrl = sanitizedBaseUrl || process.env.GONG_BASE_URL || "";
 
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless
@@ -447,12 +464,13 @@ app.post("/mcp", async (req, res) => {
 
   // Wrap the entire MCP handling in the async context so all tool calls
   // within this request can access the user's credentials.
-  requestContext.run({ accessToken, baseUrl: baseUrl || undefined }, async () => {
+  requestContext.run({ authorization, baseUrl: baseUrl || undefined }, async () => {
     try {
       res.on("close", () => transport.close());
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
     } catch (err) {
+      console.error(`MCP request error: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
       if (!res.headersSent) {
         res.status(500).json({
           jsonrpc: "2.0",
