@@ -1,10 +1,12 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServerTemplate } from "./mcp-server-template.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
 import { z } from "zod";
 import { gongRequest, gongFetchPage, requestContext, resolveAuthorization, parseBearerToken, sanitizeGongBaseUrl } from "./gong-client.js";
 
-const server = new McpServer(
+// Tools are registered once on this template; a fresh McpServer is created
+// from it for every request (see the HTTP handler below).
+const server = new McpServerTemplate(
   { name: "gong", version: "1.0.0" },
   {
     instructions:
@@ -427,7 +429,7 @@ server.registerTool(
 
 // ─── HTTP Transport ───────────────────────────────────────────────────────────
 
-const app = express();
+export const app = express();
 app.use(express.json());
 
 app.post("/mcp", async (req, res) => {
@@ -458,16 +460,20 @@ app.post("/mcp", async (req, res) => {
   }
   const baseUrl = sanitizedBaseUrl || process.env.GONG_BASE_URL || "";
 
+  // Stateless mode: the SDK requires a fresh transport per request, and a
+  // McpServer can only be connected to one transport at a time, so both are
+  // created here and torn down when the response closes.
+  const mcp = server.create();
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless
   });
 
   // Wrap the entire MCP handling in the async context so all tool calls
   // within this request can access the user's credentials.
-  requestContext.run({ authorization, baseUrl: baseUrl || undefined }, async () => {
+  await requestContext.run({ authorization, baseUrl: baseUrl || undefined }, async () => {
     try {
-      res.on("close", () => transport.close());
-      await server.connect(transport);
+      res.on("close", () => mcp.close().catch((e) => console.error(`MCP close error: ${e}`)));
+      await mcp.connect(transport);
       await transport.handleRequest(req, res, req.body);
     } catch (err) {
       console.error(`MCP request error: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
@@ -480,9 +486,4 @@ app.post("/mcp", async (req, res) => {
       }
     }
   });
-});
-
-const PORT = parseInt(process.env.PORT || "8000", 10);
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Gong MCP server listening on 0.0.0.0:${PORT}/mcp`);
 });
