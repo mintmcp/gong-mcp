@@ -94,3 +94,34 @@ describe("POST /mcp under concurrent requests", () => {
     expect(stub.seenAuth.sort()).toEqual(tokens.map((t) => `Bearer ${t}`).sort());
   });
 });
+
+describe("server instructions", () => {
+  let server: Awaited<ReturnType<typeof startApp>>;
+  beforeAll(async () => {
+    server = await startApp();
+  });
+  afterAll(() => server.close());
+
+  async function rpc(method: string, params: Record<string, unknown>) {
+    const res = await fetch(server.url, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    });
+    return JSON.parse((await res.text()).match(/^data: (.*)$/m)![1]).result;
+  }
+
+  it("only mentions tools that are actually registered", async () => {
+    const init = await rpc("initialize", {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "test", version: "0.0.0" },
+    });
+    const registered = new Set((await rpc("tools/list", {})).tools.map((t: { name: string }) => t.name));
+    // snake_case identifiers in the prose are tool names; every one must exist.
+    const mentioned = [...new Set(String(init.instructions).match(/\b[a-z]+(?:_[a-z]+)+\b/g))];
+    expect(mentioned.length).toBeGreaterThan(0);
+    expect(mentioned.filter((name) => !registered.has(name))).toEqual([]);
+  });
+});
+

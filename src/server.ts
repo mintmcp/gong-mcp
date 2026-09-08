@@ -10,7 +10,7 @@ const server = new McpServerTemplate(
   { name: "gong", version: "1.0.0" },
   {
     instructions:
-      "Gong conversation intelligence API. Use list_calls or list_calls_extensive to find calls, then get_call or get_call_transcripts for details. Use list_users to find user IDs needed by other tools. For actions not covered by dedicated tools, use search_actions to discover available API operations, then execute_action to run them.",
+      "Gong conversation intelligence API. Find calls with list_calls (ISO-8601 date range, paginate with nextPageToken), then get_call for one call's details or get_call_transcripts for speaker-segmented transcripts. list_users returns the user IDs needed by get_interaction_stats, get_aggregate_activity and add_call_metadata; list_workspaces returns workspace IDs for filtering. Stats cover yesterday and earlier only. Write tools (add_call_metadata, add_meeting, update_meeting, delete_meeting, add_users_access_to_calls, delete_users_access_to_calls) change data in Gong and return a tool error if the target does not exist.",
   }
 );
 
