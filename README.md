@@ -54,6 +54,19 @@ scoped to (tools filter via `workspaceId`).
 > sees what the service account can see, and write actions are attributed to it.
 > Use per-user OAuth when per-rep visibility or attribution matters.
 
+## Gong API host
+
+Requests go to `https://api.gong.io` by default. Gong also assigns each company a
+dedicated host (for example `https://us-12345.api.gong.io`), shown on Gong's API
+settings page (Company Settings → API). Prefer that host:
+
+| Setting | Scope | Notes |
+|---|---|---|
+| `GONG_BASE_URL` env var | Whole deployment | Set as a **global** env var in the connector settings. Trusted as-is. |
+| `x-gong-base-url` request header | Single request | Optional per-user override. Only `https://*.api.gong.io` on the default port is accepted; anything else is ignored with a warning and the deployment host is used. |
+
+The effective host is printed at startup.
+
 ## OAuth Scopes
 
 ```
@@ -115,6 +128,9 @@ npm start            # Run compiled JS
 The server listens on `$PORT` (default 8000) at `/mcp`. For local testing, set
 either `GONG_ACCESS_TOKEN` (bearer) or `GONG_ACCESS_KEY` + `GONG_ACCESS_KEY_SECRET`
 (service account).
+
+`GONG_BASE_URL` (optional) points the server at your company's Gong API host; see
+[Gong API host](#gong-api-host).
 
 `GONG_REQUEST_TIMEOUT_MS` (optional, default `30000`) controls the per-request
 timeout to Gong in milliseconds.

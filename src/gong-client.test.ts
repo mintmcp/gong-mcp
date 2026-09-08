@@ -8,6 +8,7 @@ import {
   gongRequest,
   gongFetchPage,
   requestContext,
+  DEFAULT_BASE_URL,
 } from "./gong-client.js";
 
 describe("resolveAuthorization", () => {
@@ -85,6 +86,29 @@ describe("extractPage", () => {
   it("does not treat Gong's errors array as records", () => {
     const raw = { requestId: "r1", errors: ["No calls found corresponding to the provided filters"] };
     expect(extractPage(raw)).toEqual({ records: [], totalRecords: 0, nextPageToken: undefined });
+  });
+});
+
+describe("gongRequest base URL", () => {
+  const okFetch = () =>
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } })));
+  const requestedUrl = () => (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("defaults to Gong's generic API host, not a tenant-specific one", async () => {
+    okFetch();
+    await requestContext.run({ authorization: "Bearer t" }, () => gongRequest({ method: "GET", path: "/v2/users" }));
+    expect(DEFAULT_BASE_URL).toBe("https://api.gong.io");
+    expect(requestedUrl()).toBe("https://api.gong.io/v2/users");
+  });
+
+  it("uses the per-request base URL when one is set", async () => {
+    okFetch();
+    await requestContext.run({ authorization: "Bearer t", baseUrl: "https://us-12345.api.gong.io" }, () =>
+      gongRequest({ method: "GET", path: "/v2/users" })
+    );
+    expect(requestedUrl()).toBe("https://us-12345.api.gong.io/v2/users");
   });
 });
 
@@ -173,8 +197,8 @@ describe("retryDelayMs", () => {
 
 describe("sanitizeGongBaseUrl", () => {
   it("accepts a regional Gong API host and returns the origin", () => {
-    expect(sanitizeGongBaseUrl("https://us-11711.api.gong.io")).toBe("https://us-11711.api.gong.io");
-    expect(sanitizeGongBaseUrl("https://us-11711.api.gong.io/v2/calls")).toBe("https://us-11711.api.gong.io");
+    expect(sanitizeGongBaseUrl("https://us-12345.api.gong.io")).toBe("https://us-12345.api.gong.io");
+    expect(sanitizeGongBaseUrl("https://us-12345.api.gong.io/v2/calls")).toBe("https://us-12345.api.gong.io");
   });
 
   it("accepts the bare api.gong.io host", () => {
@@ -194,12 +218,12 @@ describe("sanitizeGongBaseUrl", () => {
 
   it("rejects non-default ports but allows explicit 443", () => {
     expect(sanitizeGongBaseUrl("https://api.gong.io:8443")).toBeUndefined();
-    expect(sanitizeGongBaseUrl("https://us-11711.api.gong.io:9443")).toBeUndefined();
+    expect(sanitizeGongBaseUrl("https://us-12345.api.gong.io:9443")).toBeUndefined();
     expect(sanitizeGongBaseUrl("https://api.gong.io:443")).toBe("https://api.gong.io");
   });
 
   it("rejects non-HTTPS schemes", () => {
-    expect(sanitizeGongBaseUrl("http://us-11711.api.gong.io")).toBeUndefined();
+    expect(sanitizeGongBaseUrl("http://us-12345.api.gong.io")).toBeUndefined();
     expect(sanitizeGongBaseUrl("file:///etc/passwd")).toBeUndefined();
   });
 

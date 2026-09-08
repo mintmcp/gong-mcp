@@ -4,7 +4,10 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 
-const DEFAULT_BASE_URL = "https://us-11711.api.gong.io";
+// Gong's generic API host. Each tenant also has a company-specific host
+// (https://us-NNNNN.api.gong.io, shown on Gong's API settings page); operators
+// set it via GONG_BASE_URL, clients may pass it per request via x-gong-base-url.
+export const DEFAULT_BASE_URL = "https://api.gong.io";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_RETRIES = 2;
