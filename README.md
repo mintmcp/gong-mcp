@@ -118,6 +118,8 @@ After deploying, configure OAuth in the connector settings page returned by the 
 
 ## Development
 
+Requires Node 24 or newer (see `engines` in `package.json`).
+
 ```bash
 npm install
 npm run build        # TypeScript compile
