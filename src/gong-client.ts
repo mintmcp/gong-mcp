@@ -124,6 +124,13 @@ export interface GongRequestOptions {
   path: string;
   query?: Record<string, string>;
   body?: unknown;
+  /**
+   * Treat a 404 as an empty result and return its body instead of throwing.
+   * Gong's list/filter endpoints use 404 for "no records match", so list
+   * callers set this. Leave it unset for by-id reads and all writes, where a
+   * 404 means the target does not exist and must surface as an error.
+   */
+  notFoundAsEmpty?: boolean;
 }
 
 export async function gongRequest(opts: GongRequestOptions): Promise<unknown> {
@@ -169,14 +176,13 @@ export async function gongRequest(opts: GongRequestOptions): Promise<unknown> {
       await sleep(retryDelayMs(res, attempt));
       continue;
     }
-    return handleResponse(res);
+    return handleResponse(res, opts.notFoundAsEmpty === true);
   }
 }
 
-async function handleResponse(res: Response): Promise<unknown> {
+async function handleResponse(res: Response, notFoundAsEmpty: boolean): Promise<unknown> {
   if (!res.ok) {
-    // Gong returns 404 for "no results" — return the response body instead of throwing
-    if (res.status === 404) {
+    if (res.status === 404 && notFoundAsEmpty) {
       const contentType = res.headers.get("content-type") || "";
       if (contentType.includes("application/json")) return res.json();
       return { errors: ["No results found"] };
@@ -197,9 +203,11 @@ export function extractPage(
   const recordsMeta = result.records as Record<string, unknown> | undefined;
   const totalRecords = (recordsMeta?.totalRecords as number) || 0;
 
+  // Every top-level array except pagination metadata and Gong's `errors`
+  // (present on a 404 "no results" body) holds records.
   const records: unknown[] = [];
   for (const [key, val] of Object.entries(result)) {
-    if (key !== "records" && Array.isArray(val)) records.push(...val);
+    if (key !== "records" && key !== "errors" && Array.isArray(val)) records.push(...val);
   }
 
   return { records, totalRecords, nextPageToken: (recordsMeta?.cursor as string) || undefined };
@@ -213,7 +221,8 @@ export function extractPage(
 export async function gongFetchPage(
   opts: GongRequestOptions & { cursor?: string }
 ): Promise<{ records: unknown[]; totalRecords: number; nextPageToken?: string }> {
-  const { cursor, ...baseOpts } = opts;
+  // List endpoints answer 404 when nothing matches the filter; that is an empty page.
+  const { cursor, ...baseOpts } = { notFoundAsEmpty: true, ...opts };
   let reqOpts: GongRequestOptions;
 
   if (baseOpts.method === "GET") {

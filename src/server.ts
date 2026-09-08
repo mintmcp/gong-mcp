@@ -178,7 +178,7 @@ server.registerTool(
   async ({ workspaceId }) => {
     const query: Record<string, string> = {};
     if (workspaceId) query.workspaceId = workspaceId;
-    const result = await gongRequest({ method: "GET", path: "/v2/settings/trackers", query });
+    const result = await gongRequest({ method: "GET", path: "/v2/settings/trackers", query, notFoundAsEmpty: true });
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
 );
@@ -192,7 +192,7 @@ server.registerTool(
     annotations: { readOnlyHint: true, openWorldHint: true },
   },
   async () => {
-    const result = await gongRequest({ method: "GET", path: "/v2/call-outcomes" });
+    const result = await gongRequest({ method: "GET", path: "/v2/call-outcomes", notFoundAsEmpty: true });
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
 );
@@ -207,7 +207,7 @@ server.registerTool(
     annotations: { readOnlyHint: true, openWorldHint: true },
   },
   async () => {
-    const result = await gongRequest({ method: "GET", path: "/v2/workspaces" });
+    const result = await gongRequest({ method: "GET", path: "/v2/workspaces", notFoundAsEmpty: true });
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
 );
@@ -229,6 +229,7 @@ server.registerTool(
       method: "POST",
       path: "/v2/calls/users-access",
       body: { filter: { callIds } },
+      notFoundAsEmpty: true,
     });
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
