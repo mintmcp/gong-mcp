@@ -1,14 +1,20 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { createRequire } from "node:module";
+import { McpServerTemplate } from "./mcp-server-template.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
 import { z } from "zod";
 import { gongRequest, gongFetchPage, requestContext, resolveAuthorization, parseBearerToken, sanitizeGongBaseUrl } from "./gong-client.js";
 
-const server = new McpServer(
-  { name: "gong", version: "1.0.0" },
+// Single source of truth for the version reported to MCP clients.
+const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
+
+// Tools are registered once on this template; a fresh McpServer is created
+// from it for every request (see the HTTP handler below).
+const server = new McpServerTemplate(
+  { name: "gong", version },
   {
     instructions:
-      "Gong conversation intelligence API. Use list_calls or list_calls_extensive to find calls, then get_call or get_call_transcripts for details. Use list_users to find user IDs needed by other tools. For actions not covered by dedicated tools, use search_actions to discover available API operations, then execute_action to run them.",
+      "Gong conversation intelligence API. Find calls with list_calls (ISO-8601 date range, paginate with nextPageToken), then get_call for one call's details or get_call_transcripts for speaker-segmented transcripts. list_users returns the user IDs needed by get_interaction_stats, get_aggregate_activity and add_call_metadata; list_workspaces returns workspace IDs for filtering. Stats cover yesterday and earlier only. Write tools (add_call_metadata, add_meeting, update_meeting, delete_meeting, add_users_access_to_calls, delete_users_access_to_calls) change data in Gong and return a tool error if the target does not exist.",
   }
 );
 
@@ -176,7 +182,7 @@ server.registerTool(
   async ({ workspaceId }) => {
     const query: Record<string, string> = {};
     if (workspaceId) query.workspaceId = workspaceId;
-    const result = await gongRequest({ method: "GET", path: "/v2/settings/trackers", query });
+    const result = await gongRequest({ method: "GET", path: "/v2/settings/trackers", query, notFoundAsEmpty: true });
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
 );
@@ -190,7 +196,7 @@ server.registerTool(
     annotations: { readOnlyHint: true, openWorldHint: true },
   },
   async () => {
-    const result = await gongRequest({ method: "GET", path: "/v2/call-outcomes" });
+    const result = await gongRequest({ method: "GET", path: "/v2/call-outcomes", notFoundAsEmpty: true });
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
 );
@@ -205,7 +211,7 @@ server.registerTool(
     annotations: { readOnlyHint: true, openWorldHint: true },
   },
   async () => {
-    const result = await gongRequest({ method: "GET", path: "/v2/workspaces" });
+    const result = await gongRequest({ method: "GET", path: "/v2/workspaces", notFoundAsEmpty: true });
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
 );
@@ -227,6 +233,7 @@ server.registerTool(
       method: "POST",
       path: "/v2/calls/users-access",
       body: { filter: { callIds } },
+      notFoundAsEmpty: true,
     });
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
@@ -427,8 +434,13 @@ server.registerTool(
 
 // ─── HTTP Transport ───────────────────────────────────────────────────────────
 
-const app = express();
+export const app = express();
+app.disable("x-powered-by");
 app.use(express.json());
+
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok" });
+});
 
 app.post("/mcp", async (req, res) => {
   // Resolve auth for this request. A per-user OAuth token (header) takes
@@ -458,16 +470,20 @@ app.post("/mcp", async (req, res) => {
   }
   const baseUrl = sanitizedBaseUrl || process.env.GONG_BASE_URL || "";
 
+  // Stateless mode: the SDK requires a fresh transport per request, and a
+  // McpServer can only be connected to one transport at a time, so both are
+  // created here and torn down when the response closes.
+  const mcp = server.create();
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless
   });
 
   // Wrap the entire MCP handling in the async context so all tool calls
   // within this request can access the user's credentials.
-  requestContext.run({ authorization, baseUrl: baseUrl || undefined }, async () => {
+  await requestContext.run({ authorization, baseUrl: baseUrl || undefined }, async () => {
     try {
-      res.on("close", () => transport.close());
-      await server.connect(transport);
+      res.on("close", () => mcp.close().catch((e) => console.error(`MCP close error: ${e}`)));
+      await mcp.connect(transport);
       await transport.handleRequest(req, res, req.body);
     } catch (err) {
       console.error(`MCP request error: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
@@ -482,7 +498,14 @@ app.post("/mcp", async (req, res) => {
   });
 });
 
-const PORT = parseInt(process.env.PORT || "8000", 10);
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Gong MCP server listening on 0.0.0.0:${PORT}/mcp`);
-});
+// Stateless server: no standalone SSE stream (GET) and no session to delete
+// (DELETE). Answer 405 with a JSON-RPC error body, as the SDK's stateless
+// example does, instead of Express's HTML 404.
+function methodNotAllowed(_req: express.Request, res: express.Response) {
+  res
+    .status(405)
+    .set("Allow", "POST")
+    .json({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed." }, id: null });
+}
+app.get("/mcp", methodNotAllowed);
+app.delete("/mcp", methodNotAllowed);
