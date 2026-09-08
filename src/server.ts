@@ -1,13 +1,17 @@
+import { createRequire } from "node:module";
 import { McpServerTemplate } from "./mcp-server-template.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
 import { z } from "zod";
 import { gongRequest, gongFetchPage, requestContext, resolveAuthorization, parseBearerToken, sanitizeGongBaseUrl } from "./gong-client.js";
 
+// Single source of truth for the version reported to MCP clients.
+const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
+
 // Tools are registered once on this template; a fresh McpServer is created
 // from it for every request (see the HTTP handler below).
 const server = new McpServerTemplate(
-  { name: "gong", version: "1.0.0" },
+  { name: "gong", version },
   {
     instructions:
       "Gong conversation intelligence API. Find calls with list_calls (ISO-8601 date range, paginate with nextPageToken), then get_call for one call's details or get_call_transcripts for speaker-segmented transcripts. list_users returns the user IDs needed by get_interaction_stats, get_aggregate_activity and add_call_metadata; list_workspaces returns workspace IDs for filtering. Stats cover yesterday and earlier only. Write tools (add_call_metadata, add_meeting, update_meeting, delete_meeting, add_users_access_to_calls, delete_users_access_to_calls) change data in Gong and return a tool error if the target does not exist.",

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import http from "node:http";
+import { readFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { app } from "./server.js";
 
@@ -122,6 +123,16 @@ describe("server instructions", () => {
     const mentioned = [...new Set(String(init.instructions).match(/\b[a-z]+(?:_[a-z]+)+\b/g))];
     expect(mentioned.length).toBeGreaterThan(0);
     expect(mentioned.filter((name) => !registered.has(name))).toEqual([]);
+  });
+
+  it("reports the package.json version as the server version", async () => {
+    const init = await rpc("initialize", {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "test", version: "0.0.0" },
+    });
+    const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+    expect(init.serverInfo).toEqual({ name: "gong", version: pkg.version });
   });
 });
 

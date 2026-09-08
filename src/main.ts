@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { DEFAULT_BASE_URL } from "./gong-client.js";
 import { app } from "./server.js";
 
