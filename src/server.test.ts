@@ -125,3 +125,37 @@ describe("server instructions", () => {
   });
 });
 
+describe("HTTP surface", () => {
+  let server: Awaited<ReturnType<typeof startApp>>;
+  beforeAll(async () => {
+    server = await startApp();
+  });
+  afterAll(() => server.close());
+
+  const origin = () => server.url.replace(/\/mcp$/, "");
+
+  it("answers GET and DELETE /mcp with a JSON-RPC 405 and an Allow header", async () => {
+    for (const method of ["GET", "DELETE"]) {
+      const res = await fetch(server.url, { method });
+      expect(res.status, method).toBe(405);
+      expect(res.headers.get("allow"), method).toBe("POST");
+      expect(await res.json()).toEqual({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "Method not allowed." },
+        id: null,
+      });
+    }
+  });
+
+  it("serves GET /health", async () => {
+    const res = await fetch(`${origin()}/health`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "ok" });
+  });
+
+  it("does not advertise Express via X-Powered-By", async () => {
+    const res = await fetch(`${origin()}/health`);
+    expect(res.headers.get("x-powered-by")).toBeNull();
+  });
+});
+

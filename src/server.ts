@@ -431,7 +431,12 @@ server.registerTool(
 // ─── HTTP Transport ───────────────────────────────────────────────────────────
 
 export const app = express();
+app.disable("x-powered-by");
 app.use(express.json());
+
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok" });
+});
 
 app.post("/mcp", async (req, res) => {
   // Resolve auth for this request. A per-user OAuth token (header) takes
@@ -488,3 +493,15 @@ app.post("/mcp", async (req, res) => {
     }
   });
 });
+
+// Stateless server: no standalone SSE stream (GET) and no session to delete
+// (DELETE). Answer 405 with a JSON-RPC error body, as the SDK's stateless
+// example does, instead of Express's HTML 404.
+function methodNotAllowed(_req: express.Request, res: express.Response) {
+  res
+    .status(405)
+    .set("Allow", "POST")
+    .json({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed." }, id: null });
+}
+app.get("/mcp", methodNotAllowed);
+app.delete("/mcp", methodNotAllowed);
