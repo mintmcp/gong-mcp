@@ -9,6 +9,7 @@ import {
   gongFetchPage,
   requestContext,
   resolveBaseUrl,
+  resolveRequestContext,
 } from "./gong-client.js";
 
 describe("resolveAuthorization", () => {
@@ -122,6 +123,52 @@ describe("resolveBaseUrl", () => {
     expect(resolveBaseUrl("https://evil.example.com")).toBe("https://api.gong.io");
     expect(warn).toHaveBeenCalledTimes(2);
     expect(warn.mock.calls.flat().join(" ")).not.toContain("evil.example.com");
+  });
+});
+
+describe("resolveRequestContext", () => {
+  const ENV_KEYS = ["GONG_ACCESS_KEY", "GONG_ACCESS_KEY_SECRET", "GONG_ACCESS_TOKEN", "GONG_BASE_URL"] as const;
+  const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
+  beforeEach(() => {
+    for (const k of ENV_KEYS) delete process.env[k];
+  });
+  afterEach(() => {
+    for (const k of ENV_KEYS) {
+      if (savedEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = savedEnv[k];
+    }
+  });
+  const basic = (key: string, secret: string) => `Basic ${Buffer.from(`${key}:${secret}`).toString("base64")}`;
+
+  it("prefers the per-user x-gong-access-token header over everything else", () => {
+    process.env.GONG_ACCESS_KEY = "ak";
+    process.env.GONG_ACCESS_KEY_SECRET = "sk";
+    const ctx = resolveRequestContext({ "x-gong-access-token": "user-tok", authorization: "Bearer other" });
+    expect(ctx.authorization).toBe("Bearer user-tok");
+  });
+
+  it("accepts a lowercase bearer Authorization header and lets it win over the service account", () => {
+    process.env.GONG_ACCESS_KEY = "ak";
+    process.env.GONG_ACCESS_KEY_SECRET = "sk";
+    expect(resolveRequestContext({ authorization: "bearer user-tok" }).authorization).toBe("Bearer user-tok");
+  });
+
+  it("falls back to the service account, then to the shared env token", () => {
+    process.env.GONG_ACCESS_TOKEN = "env-tok";
+    expect(resolveRequestContext({}).authorization).toBe("Bearer env-tok");
+    process.env.GONG_ACCESS_KEY = "ak";
+    process.env.GONG_ACCESS_KEY_SECRET = "sk";
+    expect(resolveRequestContext({ authorization: "Basic ignored" }).authorization).toBe(basic("ak", "sk"));
+  });
+
+  it("leaves authorization undefined without credentials but still resolves the base URL", () => {
+    expect(resolveRequestContext({})).toEqual({ authorization: undefined, baseUrl: "https://api.gong.io" });
+  });
+
+  it("takes the base URL from a valid x-gong-base-url header", () => {
+    process.env.GONG_BASE_URL = "https://us-11111.api.gong.io";
+    const ctx = resolveRequestContext({ "x-gong-base-url": "https://us-12345.api.gong.io" });
+    expect(ctx.baseUrl).toBe("https://us-12345.api.gong.io");
   });
 });
 

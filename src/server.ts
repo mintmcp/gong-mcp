@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
-import { requestContext, resolveAuthorization, parseBearerToken, resolveBaseUrl } from "./gong-client.js";
+import { requestContext, resolveRequestContext } from "./gong-client.js";
 import { registerCallTools } from "./tools/calls.js";
 import { registerUserTools } from "./tools/users.js";
 import { registerStatsTools } from "./tools/stats.js";
@@ -52,24 +52,7 @@ app.get("/health", (_req, res) => {
 });
 
 app.post("/mcp", async (req, res) => {
-  // Resolve auth for this request. A per-user OAuth token (header) takes
-  // precedence; otherwise fall back to a shared service account (GONG_ACCESS_KEY
-  // + GONG_ACCESS_KEY_SECRET -> Basic) or a shared env bearer token. The MintMCP
-  // connector config decides which of these is present, so no mode flag is needed.
-  // Per-user token: a custom header, or a (case-insensitive) Bearer Authorization
-  // header. A per-user token must win over the shared service account, so dropping
-  // a valid "bearer <t>" here would silently widen access — hence parseBearerToken.
-  const headerToken =
-    (req.headers["x-gong-access-token"] as string) ||
-    parseBearerToken(req.headers["authorization"] as string | undefined) ||
-    "";
-  const authorization = resolveAuthorization({
-    headerToken,
-    accessKey: process.env.GONG_ACCESS_KEY,
-    accessKeySecret: process.env.GONG_ACCESS_KEY_SECRET,
-    envToken: process.env.GONG_ACCESS_TOKEN,
-  });
-  const baseUrl = resolveBaseUrl(req.headers["x-gong-base-url"] as string | undefined);
+  const context = resolveRequestContext(req.headers);
 
   // Stateless mode: the SDK requires a fresh transport per request, and a
   // McpServer can only be connected to one transport at a time, so both are
@@ -81,7 +64,7 @@ app.post("/mcp", async (req, res) => {
 
   // Wrap the entire MCP handling in the async context so all tool calls
   // within this request can access the user's credentials.
-  await requestContext.run({ authorization, baseUrl }, async () => {
+  await requestContext.run(context, async () => {
     try {
       res.on("close", () => mcp.close().catch((e) => console.error(`MCP close error: ${e}`)));
       await mcp.connect(transport);

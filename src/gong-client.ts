@@ -3,6 +3,7 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { IncomingHttpHeaders } from "node:http";
 
 // Gong's generic API host. Each tenant also has a company-specific host
 // (https://us-NNNNN.api.gong.io, shown on Gong's API settings page); operators
@@ -129,14 +130,43 @@ export function resolveBaseUrl(headerValue?: string): string {
   return sanitized || process.env.GONG_BASE_URL || DEFAULT_BASE_URL;
 }
 
-function getContext(): RequestContext {
+/**
+ * Build the context for one inbound MCP request from its headers and the
+ * deployment's env. The MintMCP connector config decides which credentials are
+ * present, so no mode flag is needed.
+ *
+ * Per-user token: the x-gong-access-token header, or a (case-insensitive)
+ * Bearer Authorization header. A per-user token must win over the shared
+ * service account, so dropping a valid "bearer <t>" here would silently widen
+ * access — hence parseBearerToken. `authorization` stays undefined when nothing
+ * is configured: initialize and tools/list still work, and tool calls fail in
+ * getContext with an actionable message.
+ */
+export function resolveRequestContext(headers: IncomingHttpHeaders): RequestContext {
+  const header = (name: string): string | undefined => {
+    const value = headers[name];
+    return Array.isArray(value) ? value[0] : value;
+  };
+  return {
+    authorization: resolveAuthorization({
+      headerToken: header("x-gong-access-token") || parseBearerToken(header("authorization")),
+      accessKey: process.env.GONG_ACCESS_KEY,
+      accessKeySecret: process.env.GONG_ACCESS_KEY_SECRET,
+      envToken: process.env.GONG_ACCESS_TOKEN,
+    }),
+    baseUrl: resolveBaseUrl(header("x-gong-base-url")),
+  };
+}
+
+/** The current request's context, with credentials guaranteed present. */
+function getContext(): Required<RequestContext> {
   const ctx = requestContext.getStore();
   if (!ctx?.authorization) {
     throw new Error(
       "Missing Gong credentials. Provide a per-user OAuth token, or set GONG_ACCESS_KEY + GONG_ACCESS_KEY_SECRET (service account) in your MintMCP connector settings."
     );
   }
-  return ctx;
+  return { authorization: ctx.authorization, baseUrl: ctx.baseUrl };
 }
 
 export interface GongRequestOptions {
@@ -162,7 +192,7 @@ export async function gongRequest(opts: GongRequestOptions): Promise<unknown> {
     }
   }
 
-  const headers: Record<string, string> = { Authorization: ctx.authorization! };
+  const headers: Record<string, string> = { Authorization: ctx.authorization };
   if (opts.body) headers["Content-Type"] = "application/json";
 
   const init: RequestInit = {
