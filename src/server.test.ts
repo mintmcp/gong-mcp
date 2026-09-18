@@ -2,7 +2,9 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import http from "node:http";
 import { readFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
-import { app } from "./server.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { app, createServer } from "./server.js";
 
 /**
  * Stub Gong backend: answers every request after `delayMs` and records the
@@ -50,6 +52,23 @@ async function callTool(url: string, token: string, name: string, args: Record<s
   const data = text.match(/^data: (.*)$/m)?.[1];
   return { status: res.status, rpc: data ? JSON.parse(data) : undefined, text };
 }
+
+describe("createServer", () => {
+  async function connectClient() {
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await createServer().connect(serverTransport);
+    const client = new Client({ name: "c", version: "0.0.0" });
+    await client.connect(clientTransport);
+    return client;
+  }
+
+  it("builds independent servers that each expose every tool", async () => {
+    const [a, b] = await Promise.all([connectClient(), connectClient()]);
+    const names = async (c: Client) => (await c.listTools()).tools.map((t) => t.name).sort();
+    expect(await names(a)).toHaveLength(16);
+    expect(await names(b)).toEqual(await names(a));
+  });
+});
 
 describe("POST /mcp under concurrent requests", () => {
   let stub: Awaited<ReturnType<typeof startStubGong>>;
