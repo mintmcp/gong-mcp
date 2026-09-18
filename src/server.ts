@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
-import { requestContext, resolveAuthorization, parseBearerToken, sanitizeGongBaseUrl } from "./gong-client.js";
+import { requestContext, resolveAuthorization, parseBearerToken, resolveBaseUrl } from "./gong-client.js";
 import { registerCallTools } from "./tools/calls.js";
 import { registerUserTools } from "./tools/users.js";
 import { registerStatsTools } from "./tools/stats.js";
@@ -69,15 +69,7 @@ app.post("/mcp", async (req, res) => {
     accessKeySecret: process.env.GONG_ACCESS_KEY_SECRET,
     envToken: process.env.GONG_ACCESS_TOKEN,
   });
-  // The client-supplied base URL is sanitized to Gong's API domain (SSRF +
-  // credential-exfil guard); GONG_BASE_URL is operator-set and trusted as-is.
-  const rawBaseUrl = req.headers["x-gong-base-url"] as string | undefined;
-  const sanitizedBaseUrl = sanitizeGongBaseUrl(rawBaseUrl);
-  if (rawBaseUrl && !sanitizedBaseUrl) {
-    // Don't log the value (attacker-controlled) — just the fact of rejection.
-    console.warn("Ignoring invalid x-gong-base-url header; falling back to the configured Gong host.");
-  }
-  const baseUrl = sanitizedBaseUrl || process.env.GONG_BASE_URL || "";
+  const baseUrl = resolveBaseUrl(req.headers["x-gong-base-url"] as string | undefined);
 
   // Stateless mode: the SDK requires a fresh transport per request, and a
   // McpServer can only be connected to one transport at a time, so both are
@@ -89,7 +81,7 @@ app.post("/mcp", async (req, res) => {
 
   // Wrap the entire MCP handling in the async context so all tool calls
   // within this request can access the user's credentials.
-  await requestContext.run({ authorization, baseUrl: baseUrl || undefined }, async () => {
+  await requestContext.run({ authorization, baseUrl }, async () => {
     try {
       res.on("close", () => mcp.close().catch((e) => console.error(`MCP close error: ${e}`)));
       await mcp.connect(transport);

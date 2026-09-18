@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import {
   resolveAuthorization,
   extractPage,
@@ -8,7 +8,7 @@ import {
   gongRequest,
   gongFetchPage,
   requestContext,
-  DEFAULT_BASE_URL,
+  resolveBaseUrl,
 } from "./gong-client.js";
 
 describe("resolveAuthorization", () => {
@@ -89,32 +89,58 @@ describe("extractPage", () => {
   });
 });
 
-describe("gongRequest base URL", () => {
-  const okFetch = () =>
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } })));
-  const requestedUrl = () => (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
-
-  afterEach(() => vi.unstubAllGlobals());
-
-  it("defaults to Gong's generic API host, not a tenant-specific one", async () => {
-    okFetch();
-    await requestContext.run({ authorization: "Bearer t" }, () => gongRequest({ method: "GET", path: "/v2/users" }));
-    expect(DEFAULT_BASE_URL).toBe("https://api.gong.io");
-    expect(requestedUrl()).toBe("https://api.gong.io/v2/users");
+describe("resolveBaseUrl", () => {
+  const savedEnv = process.env.GONG_BASE_URL;
+  beforeEach(() => {
+    delete process.env.GONG_BASE_URL;
+  });
+  afterEach(() => {
+    if (savedEnv === undefined) delete process.env.GONG_BASE_URL;
+    else process.env.GONG_BASE_URL = savedEnv;
+    vi.restoreAllMocks();
   });
 
-  it("uses the per-request base URL when one is set", async () => {
-    okFetch();
+  it("defaults to Gong's generic API host, not a tenant-specific one", () => {
+    expect(resolveBaseUrl()).toBe("https://api.gong.io");
+  });
+
+  it("uses GONG_BASE_URL as-is when no header is given", () => {
+    process.env.GONG_BASE_URL = "http://127.0.0.1:9999";
+    expect(resolveBaseUrl()).toBe("http://127.0.0.1:9999");
+  });
+
+  it("prefers a valid x-gong-base-url header over GONG_BASE_URL", () => {
+    process.env.GONG_BASE_URL = "https://us-11111.api.gong.io";
+    expect(resolveBaseUrl("https://us-12345.api.gong.io/v2")).toBe("https://us-12345.api.gong.io");
+  });
+
+  it("ignores an invalid header, warns without echoing it, and falls back", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    process.env.GONG_BASE_URL = "https://us-11111.api.gong.io";
+    expect(resolveBaseUrl("https://evil.example.com")).toBe("https://us-11111.api.gong.io");
+    delete process.env.GONG_BASE_URL;
+    expect(resolveBaseUrl("https://evil.example.com")).toBe("https://api.gong.io");
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn.mock.calls.flat().join(" ")).not.toContain("evil.example.com");
+  });
+});
+
+describe("gongRequest base URL", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends the request to the context's base URL", async () => {
+    const fetchMock = vi.fn(async (_url: string) => new Response("{}", { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
     await requestContext.run({ authorization: "Bearer t", baseUrl: "https://us-12345.api.gong.io" }, () =>
       gongRequest({ method: "GET", path: "/v2/users" })
     );
-    expect(requestedUrl()).toBe("https://us-12345.api.gong.io/v2/users");
+    expect(fetchMock.mock.calls[0][0]).toBe("https://us-12345.api.gong.io/v2/users");
   });
 });
 
 describe("gongRequest 404 handling", () => {
   const notFoundBody = { requestId: "r1", errors: ["Meeting not found"] };
-  const withAuth = <T>(fn: () => Promise<T>) => requestContext.run({ authorization: "Bearer t" }, fn);
+  const withAuth = <T>(fn: () => Promise<T>) => requestContext.run({ authorization: "Bearer t", baseUrl: "https://api.gong.io" }, fn);
   const stubFetch = (status: number, body: string, contentType = "application/json") =>
     vi.stubGlobal("fetch", vi.fn(async () => new Response(body, { status, headers: { "content-type": contentType } })));
 

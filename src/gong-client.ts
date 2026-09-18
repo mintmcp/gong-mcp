@@ -7,7 +7,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 // Gong's generic API host. Each tenant also has a company-specific host
 // (https://us-NNNNN.api.gong.io, shown on Gong's API settings page); operators
 // set it via GONG_BASE_URL, clients may pass it per request via x-gong-base-url.
-export const DEFAULT_BASE_URL = "https://api.gong.io";
+// resolveBaseUrl() is the only place these are combined.
+const DEFAULT_BASE_URL = "https://api.gong.io";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_RETRIES = 2;
@@ -47,10 +48,10 @@ export function retryDelayMs(res: Response, attempt: number): number {
   return Math.min(500 * 2 ** attempt, 5_000);
 }
 
-/** Per-request context carrying the finished Authorization header and optional base URL. */
+/** Per-request context carrying the finished Authorization header and the resolved Gong base URL. */
 export interface RequestContext {
   authorization?: string;
-  baseUrl?: string;
+  baseUrl: string;
 }
 
 export const requestContext = new AsyncLocalStorage<RequestContext>();
@@ -112,6 +113,22 @@ export function sanitizeGongBaseUrl(raw?: string): string | undefined {
   }
 }
 
+/**
+ * The Gong base URL for a request, or for the deployment when called without a
+ * header value. Precedence (first match wins):
+ *   1. x-gong-base-url header, sanitized to Gong's API domain (client-supplied)
+ *   2. GONG_BASE_URL                                          (operator-set, trusted as-is)
+ *   3. Gong's generic API host
+ */
+export function resolveBaseUrl(headerValue?: string): string {
+  const sanitized = sanitizeGongBaseUrl(headerValue);
+  if (headerValue && !sanitized) {
+    // Don't log the value (attacker-controlled) — just the fact of rejection.
+    console.warn("Ignoring invalid x-gong-base-url header; falling back to the configured Gong host.");
+  }
+  return sanitized || process.env.GONG_BASE_URL || DEFAULT_BASE_URL;
+}
+
 function getContext(): RequestContext {
   const ctx = requestContext.getStore();
   if (!ctx?.authorization) {
@@ -138,8 +155,7 @@ export interface GongRequestOptions {
 
 export async function gongRequest(opts: GongRequestOptions): Promise<unknown> {
   const ctx = getContext();
-  const baseUrl = ctx.baseUrl || DEFAULT_BASE_URL;
-  const url = new URL(opts.path, baseUrl);
+  const url = new URL(opts.path, ctx.baseUrl);
   if (opts.query) {
     for (const [k, v] of Object.entries(opts.query)) {
       if (v !== undefined && v !== "") url.searchParams.set(k, v);
