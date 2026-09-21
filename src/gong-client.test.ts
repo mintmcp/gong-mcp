@@ -1,5 +1,16 @@
-import { describe, it, expect } from "vitest";
-import { resolveAuthorization, extractPage, parseBearerToken, retryDelayMs, sanitizeGongBaseUrl } from "./gong-client.js";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import {
+  resolveAuthorization,
+  extractPage,
+  parseBearerToken,
+  retryDelayMs,
+  sanitizeGongBaseUrl,
+  gongRequest,
+  gongFetchPage,
+  requestContext,
+  resolveBaseUrl,
+  resolveRequestContext,
+} from "./gong-client.js";
 
 describe("resolveAuthorization", () => {
   it("prefers a per-user header token (canonical OAuth mode)", () => {
@@ -72,6 +83,150 @@ describe("extractPage", () => {
   it("handles an empty response", () => {
     expect(extractPage({})).toEqual({ records: [], totalRecords: 0, nextPageToken: undefined });
   });
+
+  it("does not treat Gong's errors array as records", () => {
+    const raw = { requestId: "r1", errors: ["No calls found corresponding to the provided filters"] };
+    expect(extractPage(raw)).toEqual({ records: [], totalRecords: 0, nextPageToken: undefined });
+  });
+});
+
+describe("resolveBaseUrl", () => {
+  const savedEnv = process.env.GONG_BASE_URL;
+  beforeEach(() => {
+    delete process.env.GONG_BASE_URL;
+  });
+  afterEach(() => {
+    if (savedEnv === undefined) delete process.env.GONG_BASE_URL;
+    else process.env.GONG_BASE_URL = savedEnv;
+    vi.restoreAllMocks();
+  });
+
+  it("defaults to Gong's generic API host, not a tenant-specific one", () => {
+    expect(resolveBaseUrl()).toBe("https://api.gong.io");
+  });
+
+  it("uses GONG_BASE_URL as-is when no header is given", () => {
+    process.env.GONG_BASE_URL = "http://127.0.0.1:9999";
+    expect(resolveBaseUrl()).toBe("http://127.0.0.1:9999");
+  });
+
+  it("prefers a valid x-gong-base-url header over GONG_BASE_URL", () => {
+    process.env.GONG_BASE_URL = "https://us-11111.api.gong.io";
+    expect(resolveBaseUrl("https://us-12345.api.gong.io/v2")).toBe("https://us-12345.api.gong.io");
+  });
+
+  it("ignores an invalid header, warns without echoing it, and falls back", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    process.env.GONG_BASE_URL = "https://us-11111.api.gong.io";
+    expect(resolveBaseUrl("https://evil.example.com")).toBe("https://us-11111.api.gong.io");
+    delete process.env.GONG_BASE_URL;
+    expect(resolveBaseUrl("https://evil.example.com")).toBe("https://api.gong.io");
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn.mock.calls.flat().join(" ")).not.toContain("evil.example.com");
+  });
+});
+
+describe("resolveRequestContext", () => {
+  const ENV_KEYS = ["GONG_ACCESS_KEY", "GONG_ACCESS_KEY_SECRET", "GONG_ACCESS_TOKEN", "GONG_BASE_URL"] as const;
+  const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
+  beforeEach(() => {
+    for (const k of ENV_KEYS) delete process.env[k];
+  });
+  afterEach(() => {
+    for (const k of ENV_KEYS) {
+      if (savedEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = savedEnv[k];
+    }
+  });
+  const basic = (key: string, secret: string) => `Basic ${Buffer.from(`${key}:${secret}`).toString("base64")}`;
+
+  it("prefers the per-user x-gong-access-token header over everything else", () => {
+    process.env.GONG_ACCESS_KEY = "ak";
+    process.env.GONG_ACCESS_KEY_SECRET = "sk";
+    const ctx = resolveRequestContext({ "x-gong-access-token": "user-tok", authorization: "Bearer other" });
+    expect(ctx.authorization).toBe("Bearer user-tok");
+  });
+
+  it("accepts a lowercase bearer Authorization header and lets it win over the service account", () => {
+    process.env.GONG_ACCESS_KEY = "ak";
+    process.env.GONG_ACCESS_KEY_SECRET = "sk";
+    expect(resolveRequestContext({ authorization: "bearer user-tok" }).authorization).toBe("Bearer user-tok");
+  });
+
+  it("falls back to the service account, then to the shared env token", () => {
+    process.env.GONG_ACCESS_TOKEN = "env-tok";
+    expect(resolveRequestContext({}).authorization).toBe("Bearer env-tok");
+    process.env.GONG_ACCESS_KEY = "ak";
+    process.env.GONG_ACCESS_KEY_SECRET = "sk";
+    expect(resolveRequestContext({ authorization: "Basic ignored" }).authorization).toBe(basic("ak", "sk"));
+  });
+
+  it("leaves authorization undefined without credentials but still resolves the base URL", () => {
+    expect(resolveRequestContext({})).toEqual({ authorization: undefined, baseUrl: "https://api.gong.io" });
+  });
+
+  it("takes the base URL from a valid x-gong-base-url header", () => {
+    process.env.GONG_BASE_URL = "https://us-11111.api.gong.io";
+    const ctx = resolveRequestContext({ "x-gong-base-url": "https://us-12345.api.gong.io" });
+    expect(ctx.baseUrl).toBe("https://us-12345.api.gong.io");
+  });
+});
+
+describe("gongRequest base URL", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends the request to the context's base URL", async () => {
+    const fetchMock = vi.fn(async (_url: string) => new Response("{}", { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    await requestContext.run({ authorization: "Bearer t", baseUrl: "https://us-12345.api.gong.io" }, () =>
+      gongRequest({ method: "GET", path: "/v2/users" })
+    );
+    expect(fetchMock.mock.calls[0][0]).toBe("https://us-12345.api.gong.io/v2/users");
+  });
+});
+
+describe("gongRequest 404 handling", () => {
+  const notFoundBody = { requestId: "r1", errors: ["Meeting not found"] };
+  const withAuth = <T>(fn: () => Promise<T>) => requestContext.run({ authorization: "Bearer t", baseUrl: "https://api.gong.io" }, fn);
+  const stubFetch = (status: number, body: string, contentType = "application/json") =>
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(body, { status, headers: { "content-type": contentType } })));
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("throws on 404 by default, so writes and by-id reads surface a missing target", async () => {
+    stubFetch(404, JSON.stringify(notFoundBody));
+    await expect(
+      withAuth(() => gongRequest({ method: "DELETE", path: "/v2/meetings/nope" }))
+    ).rejects.toThrow(/Gong API 404: .*Meeting not found/);
+  });
+
+  it("returns the 404 body when notFoundAsEmpty is set", async () => {
+    stubFetch(404, JSON.stringify(notFoundBody));
+    await expect(
+      withAuth(() => gongRequest({ method: "GET", path: "/v2/workspaces", notFoundAsEmpty: true }))
+    ).resolves.toEqual(notFoundBody);
+  });
+
+  it("returns a placeholder when a notFoundAsEmpty 404 has no JSON body", async () => {
+    stubFetch(404, "Not Found", "text/plain");
+    await expect(
+      withAuth(() => gongRequest({ method: "GET", path: "/v2/workspaces", notFoundAsEmpty: true }))
+    ).resolves.toEqual({ errors: ["No results found"] });
+  });
+
+  it("gongFetchPage turns a 404 into an empty page", async () => {
+    stubFetch(404, JSON.stringify({ requestId: "r1", errors: ["No calls found"] }));
+    await expect(
+      withAuth(() => gongFetchPage({ method: "GET", path: "/v2/calls", query: {} }))
+    ).resolves.toEqual({ records: [], totalRecords: 0, nextPageToken: undefined });
+  });
+
+  it("still throws on other error statuses", async () => {
+    stubFetch(500, "boom", "text/plain");
+    await expect(
+      withAuth(() => gongRequest({ method: "GET", path: "/v2/workspaces", notFoundAsEmpty: true }))
+    ).rejects.toThrow("Gong API 500: boom");
+  });
 });
 
 describe("parseBearerToken", () => {
@@ -115,8 +270,8 @@ describe("retryDelayMs", () => {
 
 describe("sanitizeGongBaseUrl", () => {
   it("accepts a regional Gong API host and returns the origin", () => {
-    expect(sanitizeGongBaseUrl("https://us-11711.api.gong.io")).toBe("https://us-11711.api.gong.io");
-    expect(sanitizeGongBaseUrl("https://us-11711.api.gong.io/v2/calls")).toBe("https://us-11711.api.gong.io");
+    expect(sanitizeGongBaseUrl("https://us-12345.api.gong.io")).toBe("https://us-12345.api.gong.io");
+    expect(sanitizeGongBaseUrl("https://us-12345.api.gong.io/v2/calls")).toBe("https://us-12345.api.gong.io");
   });
 
   it("accepts the bare api.gong.io host", () => {
@@ -136,12 +291,12 @@ describe("sanitizeGongBaseUrl", () => {
 
   it("rejects non-default ports but allows explicit 443", () => {
     expect(sanitizeGongBaseUrl("https://api.gong.io:8443")).toBeUndefined();
-    expect(sanitizeGongBaseUrl("https://us-11711.api.gong.io:9443")).toBeUndefined();
+    expect(sanitizeGongBaseUrl("https://us-12345.api.gong.io:9443")).toBeUndefined();
     expect(sanitizeGongBaseUrl("https://api.gong.io:443")).toBe("https://api.gong.io");
   });
 
   it("rejects non-HTTPS schemes", () => {
-    expect(sanitizeGongBaseUrl("http://us-11711.api.gong.io")).toBeUndefined();
+    expect(sanitizeGongBaseUrl("http://us-12345.api.gong.io")).toBeUndefined();
     expect(sanitizeGongBaseUrl("file:///etc/passwd")).toBeUndefined();
   });
 

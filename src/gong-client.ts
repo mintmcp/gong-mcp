@@ -3,8 +3,13 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { IncomingHttpHeaders } from "node:http";
 
-const DEFAULT_BASE_URL = "https://us-11711.api.gong.io";
+// Gong's generic API host. Each tenant also has a company-specific host
+// (https://us-NNNNN.api.gong.io, shown on Gong's API settings page); operators
+// set it via GONG_BASE_URL, clients may pass it per request via x-gong-base-url.
+// resolveBaseUrl() is the only place these are combined.
+const DEFAULT_BASE_URL = "https://api.gong.io";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_RETRIES = 2;
@@ -44,10 +49,10 @@ export function retryDelayMs(res: Response, attempt: number): number {
   return Math.min(500 * 2 ** attempt, 5_000);
 }
 
-/** Per-request context carrying the finished Authorization header and optional base URL. */
+/** Per-request context carrying the finished Authorization header and the resolved Gong base URL. */
 export interface RequestContext {
   authorization?: string;
-  baseUrl?: string;
+  baseUrl: string;
 }
 
 export const requestContext = new AsyncLocalStorage<RequestContext>();
@@ -109,14 +114,59 @@ export function sanitizeGongBaseUrl(raw?: string): string | undefined {
   }
 }
 
-function getContext(): RequestContext {
+/**
+ * The Gong base URL for a request, or for the deployment when called without a
+ * header value. Precedence (first match wins):
+ *   1. x-gong-base-url header, sanitized to Gong's API domain (client-supplied)
+ *   2. GONG_BASE_URL                                          (operator-set, trusted as-is)
+ *   3. Gong's generic API host
+ */
+export function resolveBaseUrl(headerValue?: string): string {
+  const sanitized = sanitizeGongBaseUrl(headerValue);
+  if (headerValue && !sanitized) {
+    // Don't log the value (attacker-controlled) — just the fact of rejection.
+    console.warn("Ignoring invalid x-gong-base-url header; falling back to the configured Gong host.");
+  }
+  return sanitized || process.env.GONG_BASE_URL || DEFAULT_BASE_URL;
+}
+
+/**
+ * Build the context for one inbound MCP request from its headers and the
+ * deployment's env. The MintMCP connector config decides which credentials are
+ * present, so no mode flag is needed.
+ *
+ * Per-user token: the x-gong-access-token header, or a (case-insensitive)
+ * Bearer Authorization header. A per-user token must win over the shared
+ * service account, so dropping a valid "bearer <t>" here would silently widen
+ * access — hence parseBearerToken. `authorization` stays undefined when nothing
+ * is configured: initialize and tools/list still work, and tool calls fail in
+ * getContext with an actionable message.
+ */
+export function resolveRequestContext(headers: IncomingHttpHeaders): RequestContext {
+  const header = (name: string): string | undefined => {
+    const value = headers[name];
+    return Array.isArray(value) ? value[0] : value;
+  };
+  return {
+    authorization: resolveAuthorization({
+      headerToken: header("x-gong-access-token") || parseBearerToken(header("authorization")),
+      accessKey: process.env.GONG_ACCESS_KEY,
+      accessKeySecret: process.env.GONG_ACCESS_KEY_SECRET,
+      envToken: process.env.GONG_ACCESS_TOKEN,
+    }),
+    baseUrl: resolveBaseUrl(header("x-gong-base-url")),
+  };
+}
+
+/** The current request's context, with credentials guaranteed present. */
+function getContext(): Required<RequestContext> {
   const ctx = requestContext.getStore();
   if (!ctx?.authorization) {
     throw new Error(
       "Missing Gong credentials. Provide a per-user OAuth token, or set GONG_ACCESS_KEY + GONG_ACCESS_KEY_SECRET (service account) in your MintMCP connector settings."
     );
   }
-  return ctx;
+  return { authorization: ctx.authorization, baseUrl: ctx.baseUrl };
 }
 
 export interface GongRequestOptions {
@@ -124,19 +174,25 @@ export interface GongRequestOptions {
   path: string;
   query?: Record<string, string>;
   body?: unknown;
+  /**
+   * Treat a 404 as an empty result and return its body instead of throwing.
+   * Gong's list/filter endpoints use 404 for "no records match", so list
+   * callers set this. Leave it unset for by-id reads and all writes, where a
+   * 404 means the target does not exist and must surface as an error.
+   */
+  notFoundAsEmpty?: boolean;
 }
 
 export async function gongRequest(opts: GongRequestOptions): Promise<unknown> {
   const ctx = getContext();
-  const baseUrl = ctx.baseUrl || DEFAULT_BASE_URL;
-  const url = new URL(opts.path, baseUrl);
+  const url = new URL(opts.path, ctx.baseUrl);
   if (opts.query) {
     for (const [k, v] of Object.entries(opts.query)) {
       if (v !== undefined && v !== "") url.searchParams.set(k, v);
     }
   }
 
-  const headers: Record<string, string> = { Authorization: ctx.authorization! };
+  const headers: Record<string, string> = { Authorization: ctx.authorization };
   if (opts.body) headers["Content-Type"] = "application/json";
 
   const init: RequestInit = {
@@ -169,14 +225,13 @@ export async function gongRequest(opts: GongRequestOptions): Promise<unknown> {
       await sleep(retryDelayMs(res, attempt));
       continue;
     }
-    return handleResponse(res);
+    return handleResponse(res, opts.notFoundAsEmpty === true);
   }
 }
 
-async function handleResponse(res: Response): Promise<unknown> {
+async function handleResponse(res: Response, notFoundAsEmpty: boolean): Promise<unknown> {
   if (!res.ok) {
-    // Gong returns 404 for "no results" — return the response body instead of throwing
-    if (res.status === 404) {
+    if (res.status === 404 && notFoundAsEmpty) {
       const contentType = res.headers.get("content-type") || "";
       if (contentType.includes("application/json")) return res.json();
       return { errors: ["No results found"] };
@@ -197,9 +252,11 @@ export function extractPage(
   const recordsMeta = result.records as Record<string, unknown> | undefined;
   const totalRecords = (recordsMeta?.totalRecords as number) || 0;
 
+  // Every top-level array except pagination metadata and Gong's `errors`
+  // (present on a 404 "no results" body) holds records.
   const records: unknown[] = [];
   for (const [key, val] of Object.entries(result)) {
-    if (key !== "records" && Array.isArray(val)) records.push(...val);
+    if (key !== "records" && key !== "errors" && Array.isArray(val)) records.push(...val);
   }
 
   return { records, totalRecords, nextPageToken: (recordsMeta?.cursor as string) || undefined };
@@ -213,7 +270,8 @@ export function extractPage(
 export async function gongFetchPage(
   opts: GongRequestOptions & { cursor?: string }
 ): Promise<{ records: unknown[]; totalRecords: number; nextPageToken?: string }> {
-  const { cursor, ...baseOpts } = opts;
+  // List endpoints answer 404 when nothing matches the filter; that is an empty page.
+  const { cursor, ...baseOpts } = { notFoundAsEmpty: true, ...opts };
   let reqOpts: GongRequestOptions;
 
   if (baseOpts.method === "GET") {
